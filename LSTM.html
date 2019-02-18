@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <link href="bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="style_3.css">
+    <title>LSTM tensorflow js</title>
+  </head>
+  <body>
+    <div class="wrap">
+      <div id="arrow-left" class="arrow"></div>
+      <div id="slider">
+       
+        <div class="slide slide3">
+          <div class="slide-content ">
+            <div class="container animated slideInDown" align="center">
+              <h1>Do you want to use an LSTM network to predict the future price of a stock   ? </h1>
+              <hr>
+              <p>Please go to yahoo finance download the csv file of a stock you intrested in. Then upload to CSV file using the button bellow.</p>
+              
+            <label class="btn btn-default btn-lg btn-primary">
+              Upload a CSV file 
+              <input
+              type="file"
+              id="csvFileInput"
+              class="btn btn-default btn-lg btn-primary"
+              onchange="handleFiles(this.files)"
+              accept=".csv" hidden/>
+            </label>
+            
+             
+            </div>
+            <p id="file"></p>
+            <div id="training">
+
+            </div>
+            <div id="training_part"></div>
+            <div class="chart-container">
+              <canvas id="line-chartcanvas"></canvas>
+            </div>
+          </div>
+          
+        </div>
+      </div>
+      <div id="arrow-right" class="arrow"></div>
+    </div>
+
+    <script src="jquery.js"></script>
+    <script src="lodash.js"></script>
+    <script src="num.js"></script>
+    <script src="bootstrap.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/nicolaspanel/numjs@0.15.1/dist/numjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@0.13.3/dist/tf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.4.0/Chart.min.js"></script>
+    <script src="https://cdn.rawgit.com/Gmousse/dataframe-js/master/dist/dataframe.js"></script>
+    <script>
+      function handleFiles(files) {
+        
+        if (window.FileReader) {
+          // FileReader are supported.
+          getAsText(files[0]);
+        } else {
+          alert("FileReader are not supported in this browser.");
+        }
+      }
+
+      
+
+
+      //helper function to extract all the data for the columns i am intrested in , i will use it twice once for the "features" and one for the "target"
+      function extractColumns(data, columnNames) {
+        const headers = _.first(data);
+
+        const indexes = _.map(columnNames, column => headers.indexOf(column));
+        console.log(indexes)
+        const extracted = _.map(data, row => _.pullAt(row, indexes));
+
+        return extracted;
+      }
+      //new added way to handle csv file
+      var output = [];
+      var headers_1=[]
+      var labels_1=[]
+      var features_1=[]
+      var labelColumns_1=["Close"]
+      //var dataColumns_1=["Open","High","Low"]
+      var dataColumns_1=["Open", "High", "Low"]
+      var features_training=[]
+      var features_testing=[]
+      var labels_training=[]
+      var labels_testing=[]
+      
+      
+      function readSingleFile(evt) {
+        var file = evt.target.files[0]; 
+        if (file) {
+          var readFile = new FileReader();
+          readFile.onload = function(e) { 
+              var contents = e.target.result;
+              document.querySelector('#file').innerHTML =("File Uploaded! <br />" + "name: " + file.name + "<br />"+"<br/>"+"Click the button bellow to run the model");
+    
+              var lines = contents.split("\n") 
+              
+              for (var i=0; i<lines.length; i++){
+                output.push(lines[i].split(","));
+              }
+              // map over the output array uising the dropRightWhile function from loadash in order to make sure that i drop all the empty columns if there are any
+              output=output.map(row=>_.dropRightWhile(row,val=>val===""))
+              //geting the columns names from the csv file
+              headers_1=_.first(output)
+
+              //i map over each row (except the row 0 which is my header row) to transform the strings to numbers checking that the item is actually a nunber otherwise i return the string
+              output=output.map((row,index)=>{
+                if(index===0){
+                  return row;
+                  //index 0 is my headers so i skip this row
+                }
+                return row.map((element,index)=>{
+                  //checking whether the column is date and then i convert it from string to date format
+                  if (headers_1[index]==="Date"){
+                    var dateString = element.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+                    return  new Date( dateString[3], dateString[2]-1, dateString[1] )
+                  }
+                  const result=parseFloat(element);
+                  return _.isNaN(result) ? element : result;
+                  // checking if the result is a number if it is not a number then i return the element as it was initially
+                })
+              })
+
+              //use the helper function to extract the relevant data
+              console.log(output)
+              labels_1=extractColumns(output,labelColumns_1)
+              features_1=extractColumns(output,dataColumns_1)
+
+              //using the shift method to remove the name of the column from my array
+              labels_1.shift()
+              features_1.shift()
+              
+              //remove the last elemnt of the array
+              labels_1.pop()
+              features_1.pop()
+
+              trainSize=Math.floor(output.length/4)
+              features_training=features_1.slice(0,trainSize)
+              labels_training=labels_1.slice(0,trainSize)
+              features_testing=features_1.slice(trainSize)
+              labels_testing=labels_1.slice(trainSize)
+
+              var options = document.querySelector('#training');
+              options.innerHTML = options.innerHTML+ ('<button type="button" id="run-model" form="form_image" class="btn btn-primary">Run the model</button>')
+              document.getElementById('run-model').addEventListener('click', train_model);
+
+         }
+         readFile.readAsText(file);
+          
+        } else { 
+          alert("Failed to load file");
+        }
+      }
+      document.getElementById('csvFileInput').addEventListener('change', readSingleFile);
+      
+
+      //making secuqntial data
+      let sequence_lenght = 30
+      let future_period_target =7
+      function sequential_data(dataset){
+        let data_X_values=[]
+        for(i=sequence_lenght;i<(dataset.length-future_period_target);i++){
+         let a= dataset.slice(i-sequence_lenght,i).reverse() 
+         data_X_values.push(a)
+        }return(data_X_values)
+      }
+      function secuqntial_label(dataset){
+        let data_Y_values=[]
+        for(i=sequence_lenght;i<(dataset.length-future_period_target);i++){
+          let b= dataset[i+future_period_target]
+          data_Y_values.push(b)
+         }return(data_Y_values)
+      }
+
+      function size(ar){
+        var row_count = ar.length;
+        var row_sizes = []
+        for(var i=0;i<row_count;i++){
+            row_sizes.push(ar[i].length)
+        }
+        return [row_count, Math.min.apply(null, row_sizes)]
+    }
+    function bouncer(arr) {
+      return arr.filter(Boolean);
+    }//filter nan from an array
+    function  normalize(num,min,max){
+      return (num - min) * (1/(max - min))
+    }
+    function reverseNormalization(num,min,max){
+      return (num/(1/(max-min)))+min
+    }
+
+    
+    function nomarmalize_2(data,MAX,MIN){
+      var trainingData = [];
+      
+      
+      console.log(MAX)
+
+     
+      console.log(MIN)
+
+      for(let x = 0; x < data.length; x++)
+      {
+	      let line = data[x];
+	      let normalized = [];
+        for(let y = 0 ; y < line.length; y++)
+        normalized[y] = normalize(line[y], MIN, MAX); //normalize input
+        trainingData.push(normalized)
+        
+      }return trainingData
+    }
+    function normalize_data_init(data){
+      var maxRow = data.map(function(row){ return Math.max.apply(Math, row); });
+      var MAX = Math.max.apply(null, maxRow);
+      console.log(MAX)
+
+      var minRow = data.map(function(row){ return Math.min.apply(Math, row); });
+      var MIN = Math.min.apply(null, minRow);
+      console.log(MIN)
+      return {MAX,MIN}
+    }
+
+    function denormalize_dataset(data,MAX,MIN){
+      var trainingData = [];
+      for(let x = 0; x < data.length; x++)
+      {
+	      let line = data[x];
+        var a = reverseNormalization(line, MIN, MAX); //normalize input
+        trainingData.push(a)
+        
+      }return trainingData
+    }
+    
+    
+
+    
+    async function train_model(){
+
+      var options = document.querySelector('#training');
+      options.innerHTML = options.innerHTML+ ('<p><br> Please wait while the model is running........</p>')
+
+      var{MAX,MIN}=normalize_data_init(features_training)
+      console.log(MAX+" , "+MIN)
+
+      var test=nomarmalize_2(features_training,MAX,MIN)
+      var test=sequential_data(test)
+      var x = tf.tensor3d(test, [test.length,sequence_lenght,3])
+     
+      var test_0=nomarmalize_2(labels_training,MAX,MIN)
+      var test_l=secuqntial_label(test_0)
+      var y = tf.tensor2d(test_l, [test_l.length,1])
+      var model = tf.sequential();
+      model.add(tf.layers.lstm({
+        units: 64,
+        returnSequences: true,
+        inputShape: [sequence_lenght,3]
+      }));
+      model.add(tf.layers.dropout(0.2))
+      model.add(tf.layers.lstm({
+        units: 32,
+        returnSequences: false
+      }));
+      model.add(tf.layers.dropout(0.2))
+      model.add(tf.layers.dense({units: 1, activation: 'sigmoid'}));
+      const LEARNING_RATE = 0.01;
+      model.compile({loss: 'meanSquaredError', optimizer: tf.train.adam(LEARNING_RATE)});
+      await model.fit(x, y,{
+        epochs: 10,
+        batchSize: 32,
+        callbacks: {
+          onEpochEnd: async (epoch, logs) => {
+            console.log(logs.loss + ",")
+          }
+        }})
+
+      var test_features_1=nomarmalize_2(features_testing,MAX,MIN)
+      var test_features_2=sequential_data(test_features_1)
+      var x_test = tf.tensor3d(test_features_2, [test_features_2.length,sequence_lenght,3])
+      var output =  model.predict(x_test).dataSync();
+      var deno_output=denormalize_dataset(output,MAX,MIN)
+      console.log(deno_output)
+      var test_labels_1=nomarmalize_2(labels_testing,MAX,MIN)
+      var test_labels_2=secuqntial_label(test_labels_1)
+      var test_labels_3=test_labels_2.flat()
+      var test_labels_4=denormalize_dataset(test_labels_3,MAX,MIN)
+      console.log(test_labels_4)
+      var chart_labels=[]
+      for(let x = 0; x < test_labels_4.length; x++){
+        chart_labels[i]=i
+      }
+
+      //get the line chart canvas
+      var ctx = $("#line-chartcanvas");
+
+      //line chart data
+      var data_chart = {
+        labels:chart_labels.slice(0,200),
+        datasets: [
+          {
+            label: "Predictions",
+            data:deno_output.slice(0,200),
+            backgroundColor: "blue",
+            borderColor: "lightblue",
+            fill: false,
+            lineTension: 0,
+            radius: 5
+          },
+          {
+            label: "Actual",
+            data: test_labels_4.slice(0,200),
+            backgroundColor: "green",
+            borderColor: "lightgreen",
+            fill: false,
+            lineTension: 0,
+            radius: 5
+          }
+        ]
+      };
+
+      //options
+      var options = {
+        responsive: true,
+        title: {
+          display: true,
+          position: "top",
+          text: "Line Graph",
+          fontSize: 18,
+          fontColor: "#111"
+        },
+        legend: {
+          display: true,
+          position: "bottom",
+          labels: {
+            fontColor: "#333",
+            fontSize: 16
+          }
+        }
+      };
+
+      //create Chart class object
+      var chart = new Chart(ctx, {
+        type: "line",
+        data: data_chart,
+        options: options
+      });
+      
+      }
+  
+    
+
+
+  
+  
+
+
+
+      
+
+      function getAsText(fileToRead) {
+        var reader = new FileReader();
+        // Handle errors load
+        reader.onload = loadHandler;
+        reader.onerror = errorHandler;
+        // Read file into memory as UTF-8
+        reader.readAsText(fileToRead);
+        console.log(reader);
+      }
+
+
+      function loadHandler(event) {
+        var csv = event.target.result;
+
+        
+       
+      }
+
+      function errorHandler(evt) {
+        if (evt.target.error.name == "NotReadableError") {
+          alert("Canno't read file !");
+        }
+      }
+
+      
+     
+      
+    </script>
+  </body>
+</html>
